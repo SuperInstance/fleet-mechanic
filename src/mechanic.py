@@ -475,6 +475,71 @@ class TestFleetMechanic(unittest.TestCase):
         reports = m.fleet_scan(repos=[])
         self.assertEqual(len(reports), 0)
 
+    def test_health_score_partial(self):
+        h = RepoHealth(repo="test", has_readme=True, has_gitignore=False,
+                        has_ci=True, has_tests=True, test_count=5, test_pass=3)
+        h.compute_score()
+        self.assertGreater(h.health_score, 0.0)
+        self.assertLess(h.health_score, 1.0)
+
+    def test_health_score_no_tests(self):
+        h = RepoHealth(repo="test", has_readme=True, has_gitignore=True,
+                        has_ci=True, has_tests=True, test_count=0)
+        h.compute_score()
+        # has_readme(0.2) + has_gitignore(0.1) + has_ci(0.2) + has_tests(0.2) = 0.7
+        # No pass rate bonus since test_count=0
+        self.assertEqual(h.health_score, 0.7)
+
+    def test_task_to_dict_full(self):
+        t = MechanicTask(
+            id="FULL-001", task_type=TaskType.FIX_TESTS,
+            target_repo="full-repo", target_branch="dev",
+            description="Fix all tests", params={"key": "val"},
+            result=TaskResult.PARTIAL, diagnosis="Some failed",
+            commits_made=3, tests_fixed=5, files_changed=2,
+        )
+        d = t.to_dict()
+        self.assertEqual(d["id"], "FULL-001")
+        self.assertEqual(d["type"], "fix_tests")
+        self.assertEqual(d["repo"], "full-repo")
+        self.assertEqual(d["branch"], "dev")
+        self.assertEqual(d["description"], "Fix all tests")
+        self.assertEqual(d["result"], "partial")
+        self.assertEqual(d["diagnosis"], "Some failed")
+        self.assertEqual(d["commits"], 3)
+        self.assertEqual(d["tests_fixed"], 5)
+        self.assertEqual(d["files_changed"], 2)
+
+    def test_gen_ci_node(self):
+        m = FleetMechanic("fake-token")
+        self.assertIsNone(m._gen_ci("node"))
+        self.assertIsNotNone(m._gen_ci("go"))
+        self.assertIsNotNone(m._gen_ci("rust"))
+        self.assertIsNone(m._gen_ci("unknown"))
+
+    def test_run_shell_command(self):
+        m = FleetMechanic("fake-token")
+        code, out = m._run("echo hello")
+        self.assertEqual(code, 0)
+        self.assertIn("hello", out)
+
+    def test_create_pr_and_issue(self):
+        m = FleetMechanic("fake-token")
+        pr = m.create_pr("nonexistent", "branch", "Test PR")
+        self.assertIsNone(pr)
+        issue = m.create_issue("nonexistent", "Test Issue", "Body")
+        self.assertIsNone(issue)
+
+    def test_push_changes(self):
+        import tempfile
+        m = FleetMechanic("fake-token")
+        # Create dir so subprocess doesn't crash on missing cwd, but no git repo
+        with tempfile.TemporaryDirectory() as tmpdir:
+            m.work_dir = tmpdir
+            os.makedirs(f"{tmpdir}/nonexistent-repo", exist_ok=True)
+            result = m.push_changes("nonexistent-repo", "test commit")
+            self.assertFalse(result)
+
 
 if __name__ == "__main__":
     unittest.main(verbosity=2)

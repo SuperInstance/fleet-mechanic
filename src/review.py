@@ -337,6 +337,48 @@ class TestCodeReviewer(unittest.TestCase):
         complexity = [c for c in comments if c.category == "complexity"]
         self.assertGreater(len(complexity), 0)
 
+    def test_detect_shell_injection(self):
+        r = CodeReviewer()
+        content = 'subprocess.call("rm -rf /", shell=True)\n'
+        comments = r.review_file("run.py", content)
+        security = [c for c in comments if c.category == "security" and "shell" in c.message.lower()]
+        self.assertGreater(len(security), 0)
+
+    def test_detect_os_system(self):
+        r = CodeReviewer()
+        content = 'os.system("ls -la")\n'
+        comments = r.review_file("run.py", content)
+        security = [c for c in comments if c.category == "security" and "os_system" in c.message.lower()]
+        self.assertGreater(len(security), 0)
+
+    def test_detect_long_line(self):
+        r = CodeReviewer()
+        long_line = "x = " + "a" * 130
+        comments = r.review_file("wide.py", long_line + "\n")
+        style = [c for c in comments if c.category == "style" and "long" in c.message.lower()]
+        self.assertGreater(len(style), 0)
+
+    def test_detect_todo_without_issue(self):
+        r = CodeReviewer()
+        content = "# TODO: fix this later\nx = 1\n"
+        comments = r.review_file("temp.py", content)
+        todos = [c for c in comments if "TODO" in c.message]
+        self.assertGreater(len(todos), 0)
+
+    def test_multiple_issues(self):
+        r = CodeReviewer()
+        content = 'api_key = "sk-12345678abcdef"\nresult = eval(user_input)\nx = 1\n'
+        comments = r.review_file("bad.py", content)
+        self.assertGreater(len(comments), 1)
+
+    def test_empty_directory_review(self):
+        import tempfile
+        r = CodeReviewer()
+        with tempfile.TemporaryDirectory() as tmpdir:
+            report = r.review_directory(tmpdir)
+            self.assertEqual(len(report.comments), 0)
+            self.assertGreater(report.score, 0)
+
 
 if __name__ == "__main__":
     unittest.main(verbosity=2)

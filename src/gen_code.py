@@ -332,6 +332,88 @@ class TestCodeGenerator(unittest.TestCase):
         self.assertIn("@dataclass", code)
         self.assertIn("name: str", code)
 
+    def test_python_class_with_fields(self):
+        gen = CodeGenerator()
+        spec = CodeSpec(
+            name="user",
+            description="User model",
+            language=Language.PYTHON,
+            classes=[{"name": "User", "fields": [
+                {"name": "id", "type": "int"},
+                {"name": "name", "type": "str"},
+                {"name": "email", "type": "str"},
+                {"name": "active", "type": "bool"},
+            ]}],
+        )
+        code = gen.generate(spec)
+        self.assertIn("@dataclass", code)
+        self.assertIn("class User", code)
+        self.assertIn("id: int", code)
+        self.assertIn("name: str", code)
+        self.assertIn("email: str", code)
+        self.assertIn("active: bool", code)
+
+    def test_go_tests_generation(self):
+        gen = CodeGenerator()
+        spec = CodeSpec(
+            name="calculator",
+            description="Calculator package",
+            language=Language.GO,
+            test_cases=[
+                {"name": "AddBasic", "body": "result := Add(1, 2)\n    if result != 3 {\n        t.Errorf(\"expected 3\")\n    }"},
+                {"name": "AddNegative", "body": "result := Add(-1, -2)\n    if result != -3 {\n        t.Errorf(\"expected -3\")\n    }"},
+            ],
+        )
+        tests = gen.generate_tests(spec)
+        self.assertIn("testing", tests)
+        self.assertIn("TestAddBasic", tests)
+        self.assertIn("TestAddNegative", tests)
+
+    def test_go_single_test_generation(self):
+        gen = CodeGenerator()
+        spec = CodeSpec(
+            name="handler",
+            description="Handler package",
+            language=Language.GO,
+            test_cases=[{"name": "HandleRequest", "body": "// test body"}],
+        )
+        tests = gen.generate_tests(spec)
+        self.assertIn("func TestHandleRequest", tests)
+        self.assertIn("testing.T", tests)
+
+    def test_rust_struct_generation(self):
+        gen = CodeGenerator()
+        spec = CodeSpec(
+            name="models",
+            description="Data models",
+            language=Language.RUST,
+            classes=[{"name": "Agent", "fields": [
+                {"name": "id", "type": "u64"},
+                {"name": "name", "type": "String"},
+                {"name": "trust", "type": "f64"},
+            ]}],
+        )
+        code = gen.generate(spec)
+        self.assertIn("pub struct Agent", code)
+        self.assertIn("pub id: u64", code)
+        self.assertIn("pub name: String", code)
+        self.assertIn("pub trust: f64", code)
+
+    def test_unknown_language_fallback(self):
+        gen = CodeGenerator()
+        spec = CodeSpec(
+            name="util",
+            description="Utility functions",
+            language=Language.TYPESCRIPT,
+            functions=[{"name": "format", "params": "data", "returns": "string",
+                          "body": "return JSON.stringify(data)", "doc": "Format data"}],
+        )
+        code = gen.generate(spec)
+        tests = gen.generate_tests(spec)
+        # TYPESCRIPT is not handled explicitly, returns empty strings
+        self.assertEqual(code, "")
+        self.assertEqual(tests, "")
+
 
 if __name__ == "__main__":
     unittest.main(verbosity=2)
