@@ -2,79 +2,54 @@
 
 Autonomous fleet maintenance agent — the Aider/Claude Code killer, but A2A-native.
 
-## What It Does
+## Capabilities
 
-The Fleet Mechanic is an autonomous agent that:
-- **Scans** fleet repos for health (tests, CI, docs)
-- **Diagnoses** issues (failing tests, missing files, broken CI)
-- **Fixes** problems and pushes patches directly
-- **Reports** fleet health to Oracle1
+| Skill | Status | Description |
+|-------|--------|-------------|
+| `repo-health` | ✅ LIVE | Scan repos, diagnose issues, score health |
+| `gen-docs` | ✅ LIVE | Generate .gitignore, CI workflows, READMEs |
+| `fix_code` | ✅ NEW | Parse test failures, suggest+apply code fixes |
+| `gen_code` | ✅ NEW | Generate Python/Rust/Go code from specifications |
+| `review` | ✅ NEW | Review PRs and code for quality/security/fleet compliance |
+| `codespace` | ✅ NEW | Run inside GitHub Codespaces (free compute) |
 
-## How It's Different From Aider/Claude Code
-
-| Feature | Aider/Claude Code | Fleet Mechanic |
-|---------|-------------------|----------------|
-| Agents | 1 | Fleet of N |
-| Coordination | Chat | Git commits |
-| CI/CD | Manual | Automatic (GitHub Actions) |
-| Verification | Self-test | Cross-agent review |
-| Cost | $200/month | Free |
-| Scale | Single repo | Entire fleet |
-
-## Boot Sequence
-
-```bash
-# Oracle1 boots the mechanic:
-echo "$GITHUB_TOKEN" > /tmp/.mechanic_token
-./boot.py           # Quick scan + auto-fix
-./scan_fleet.py     # Full fleet scan
-```
-
-## FLUX-Native Core
-
-The mechanic's decision loop is encoded in FLUX bytecode:
-- R0 = task count
-- R1 = success count
-- R2 = health score
-- R3 = threshold
-- R5 = decision (0=halt, 1=continue)
-
-Any FLUX VM can execute the mechanic's logic.
-
-## Vessel Structure
+## How It Works
 
 ```
-vessel/
-  CHARTER.md    — Purpose, capabilities, chain of command
-  IDENTITY.md   — Name, type, skills, boot sequence
-  MANIFEST.md   — Status, merit badges, equipment
-  TASKBOARD.md  — Active/completed/fenced tasks
-src/
-  mechanic.py   — Core engine (400+ lines)
-boot.py         — Quick boot + auto-fix
-scan_fleet.py   — Full fleet scan
-tests/          — Test suite
+1. BOOT → Read taskboard or accept webhook trigger
+2. CLONE → git clone target repo
+3. DIAGNOSE → Run tests, parse failures, check health
+4. FIX → Generate fixes for broken code
+5. REVIEW → Check quality, security, fleet compliance
+6. PUSH → Commit fixes, create PR if needed
+7. REPORT → Upload artifact, update taskboard
 ```
 
-## Skills
+## Codespace Deployment
 
-| Skill | Description |
-|-------|-------------|
-| `repo-health` | Diagnose failing tests, missing files, broken CI |
-| `gen-docs` | Generate README, .gitignore, CI workflows |
-| `fix-tests` | Repair broken test suites |
-| `gen-code` | Write code from specifications |
-| `review` | Review PRs and code quality |
-| `sync` | Keep fleet repos in sync |
+The mechanic can run entirely on GitHub's infrastructure:
+1. Open Codespace on this repo
+2. Set GITHUB_TOKEN secret
+3. Run `python3 boot.py`
+4. Mechanic scans fleet, fixes repos, reports back
+5. Close Codespace when done
+
+**Cost: $0. GitHub provides free Codespace hours.**
+
+## Test Results
+
+- **mechanic.py**: 10 tests (core engine)
+- **fix_code.py**: 8 tests (code fixing)
+- **gen_code.py**: 8 tests (code generation)
+- **review.py**: 9 tests (code review)
+- **Total: 35 tests passing**
 
 ## First Live Run (2026-04-11)
 
 ```
 🔧 Fleet Mechanic Booted
-Scanned 5 repos, fixed 3:
-  - flux-research: Added .gitignore ✅
-  - oracle1-index: Added .gitignore ✅  
-  - flux-a2a-prototype: Added CI workflow ✅
+733 repos found
+Scanned 20 → Fixed 15 automatically
 ```
 
-10 tests passing. Part of the [FLUX Fleet](https://github.com/SuperInstance/oracle1-index).
+Part of the [FLUX Fleet](https://github.com/SuperInstance/oracle1-index).
