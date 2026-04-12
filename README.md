@@ -39,11 +39,12 @@ The mechanic can run entirely on GitHub's infrastructure:
 
 ## Test Results
 
-- **mechanic.py**: 10 tests (core engine)
-- **fix_code.py**: 8 tests (code fixing)
-- **gen_code.py**: 8 tests (code generation)
-- **review.py**: 9 tests (code review)
-- **Total: 35 tests passing**
+- **mechanic.py**: 39 tests (core engine)
+- **fix_code.py**: 13 tests (code fixing)
+- **gen_code.py**: 15 tests (code generation)
+- **review.py**: 13 tests (code review)
+- **test_integration.py**: 3 tests (integration)
+- **Total: 83 tests passing**
 
 ## First Live Run (2026-04-11)
 

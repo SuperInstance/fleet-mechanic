@@ -18,6 +18,8 @@ import os
 import subprocess
 import time
 import hashlib
+import urllib.request
+import urllib.error
 from dataclasses import dataclass, field
 from typing import List, Dict, Optional, Tuple
 from enum import Enum
@@ -138,21 +140,8 @@ class FleetMechanic:
         self.completed_tasks: List[MechanicTask] = []
         self.health_reports: Dict[str, RepoHealth] = {}
     
-    def _run(self, cmd: str, cwd: Optional[str] = None, timeout: int = 60) -> Tuple[int, str]:
-        """Run a shell command safely.
-        
-        Args:
-            cmd: Shell command to execute
-            cwd: Working directory (default: self.work_dir)
-            timeout: Maximum execution time in seconds
-        
-        Returns:
-            Tuple of (exit_code, output)
-        
-        Raises:
-            subprocess.TimeoutExpired: If command exceeds timeout
-            RuntimeError: If working directory is invalid
-        """
+    def _run(self, cmd, cwd: str = None, shell: bool = True) -> Tuple[int, str]:
+        """Run a shell command. Accepts str (shell=True) or list (shell=False)."""
         env = os.environ.copy()
         env["GITHUB_TOKEN"] = self.token
         work_cwd = cwd or self.work_dir
@@ -162,8 +151,8 @@ class FleetMechanic:
         
         try:
             result = subprocess.run(
-                cmd, shell=True, capture_output=True, text=True,
-                cwd=work_cwd, env=env, timeout=timeout
+                cmd, shell=shell, capture_output=True, text=True,
+                cwd=cwd or self.work_dir, env=env, timeout=60
             )
             return result.returncode, result.stdout + result.stderr
         except subprocess.TimeoutExpired as e:
@@ -171,37 +160,31 @@ class FleetMechanic:
         except Exception as e:
             return -1, f"Command execution error: {str(e)}"
     
-    def _api(self, method: str, path: str, data: Optional[Dict] = None) -> Dict:
-        """Call GitHub API with error handling.
-        
-        Args:
-            method: HTTP method (GET, POST, PUT, DELETE)
-            path: API path (e.g., "/repos/user/repo")
-            data: Optional request body data
-        
-        Returns:
-            Parsed JSON response as dictionary
-        
-        Raises:
-            ValueError: If response is not valid JSON
-        """
-        if not path.startswith("/"):
-            path = f"/{path}"
-        
-        cmd = f'curl -s -H "Authorization: token {self.token}" -X {method}'
-        if data:
-            cmd += f" -d '{json.dumps(data)}'"
-        cmd += f" https://api.github.com{path}"
-        
-        code, out = self._run(cmd)
-        
-        if code != 0:
-            return {"error": f"API call failed with code {code}", "output": out[:200]}
-        
+    def _api(self, method: str, path: str, data: Dict = None) -> Dict:
+        """Call GitHub API using urllib (no shell injection)."""
+        url = f"https://api.github.com{path}"
+        headers = {
+            "Authorization": f"token {self.token}",
+            "Accept": "application/vnd.github.v3+json",
+            "Content-Type": "application/json",
+        }
+        body = None
+        if data is not None:
+            body = json.dumps(data).encode("utf-8")
+        req = urllib.request.Request(url, data=body, headers=headers, method=method)
         try:
-            return json.loads(out) if out else {}
-        except json.JSONDecodeError as e:
-            return {"error": f"Invalid JSON response: {str(e)}", "raw_output": out[:200]}
+            with urllib.request.urlopen(req) as resp:
+                raw = resp.read().decode("utf-8")
+                return json.loads(raw) if raw else {}
+        except urllib.error.HTTPError as e:
+            try:
+                return json.loads(e.read().decode("utf-8"))
+            except Exception:
+                return {"error": f"HTTP {e.code}: {e.reason}", "status": e.code}
+        except urllib.error.URLError as e:
+            return {"error": f"URL error: {e.reason}"}
+        except json.JSONDecodeError:
+            return {"error": "Invalid JSON response"}
     
     def clone_repo(self, repo: str) -> bool:
         """Clone a repo to work directory.
@@ -238,61 +221,21 @@ class FleetMechanic:
             return False
     
     def push_changes(self, repo: str, message: str, branch: str = "main") -> bool:
-        """Stage, commit, and push changes.
-        
-        Args:
-            repo: Repository name
-            message: Commit message
-            branch: Branch to push to (default: main)
-        
-        Returns:
-            True if push succeeded, False otherwise
-        """
-        if not repo:
-            raise ValueError("Repository name cannot be empty")
-        if not message:
-            raise ValueError("Commit message cannot be empty")
-        
-        repo_dir = os.path.join(self.work_dir, repo)
-        
-        if not os.path.isdir(repo_dir):
-            print(f"Error: Repository directory not found: {repo_dir}")
-            return False
-        
-        code, _ = self._run("git add -A", cwd=repo_dir)
-        if code != 0:
-            print(f"Warning: git add failed for {repo}")
-            return False
-        
-        code, _ = self._run(f'git commit -m "{message}"', cwd=repo_dir)
+        """Stage, commit, and push changes (no shell injection in message)."""
+        repo_dir = f"{self.work_dir}/{repo}"
+        self._run("git add -A", cwd=repo_dir)
+        code, _ = self._run(["git", "commit", "-m", message], cwd=repo_dir, shell=False)
         if code != 0:
             return False  # nothing to commit
-        
-        code, out = self._run(f"git push origin {branch}", cwd=repo_dir, timeout=60)
-        if code != 0:
-            print(f"Warning: git push failed for {repo}: {out[:200]}")
-            return False
-        
-        return True
+        code, _ = self._run(["git", "push", "origin", branch], cwd=repo_dir, shell=False)
+        return code == 0
     
     def create_pr(self, repo: str, branch: str, title: str, body: str = "") -> Optional[int]:
-        """Create a pull request.
-        
-        Args:
-            repo: Repository name
-            branch: Branch name for the PR
-            title: PR title
-            body: PR body/description
-        
-        Returns:
-            PR number if successful, None otherwise
-        """
-        if not repo or not branch or not title:
-            raise ValueError("repo, branch, and title are required")
-        
+        """Create a pull request against the repo's default branch."""
+        default_branch = self._get_default_branch(repo)
         result = self._api("POST", f"/repos/{self.org}/{repo}/pulls", {
             "title": title, "body": body,
-            "head": branch, "base": "main"
+            "head": branch, "base": default_branch
         })
         
         if "error" in result:
@@ -300,6 +243,13 @@ class FleetMechanic:
             return None
         
         return result.get("number")
+
+    def _get_default_branch(self, repo: str) -> str:
+        """Detect the default branch of a repository."""
+        info = self._api("GET", f"/repos/{self.org}/{repo}")
+        if isinstance(info, dict) and "default_branch" in info:
+            return info["default_branch"]
+        return "main"
     
     def create_issue(self, repo: str, title: str, body: str, labels: Optional[List[str]] = None) -> Optional[int]:
         """Create an issue.
@@ -570,9 +520,11 @@ class FleetMechanic:
             CI workflow YAML content, or None if not supported
         """
         templates = {
-            "python": '''name: CI\non: [push, pull_request]\njobs:\n  test:\n    runs-on: ubuntu-latest\n    steps:\n      - uses: actions/checkout@v4\n      - uses: actions/setup-python@v5\n        with: {python-version: "3.12"}\n      - run: pip install pytest\n      - run: pytest -v\n''',
-            "rust": '''name: CI\non: [push, pull_request]\njobs:\n  test:\n    runs-on: ubuntu-latest\n    steps:\n      - uses: actions/checkout@v4\n      - run: cargo test --lib\n''',
-            "go": '''name: CI\non: [push, pull_request]\njobs:\n  test:\n    runs-on: ubuntu-latest\n    steps:\n      - uses: actions/checkout@v4\n      - uses: actions/setup-go@v5\n        with: {go-version: "1.24"}\n      - run: go test ./...\n''',
+            "python": 'name: CI\non: [push, pull_request]\njobs:\n  test:\n    runs-on: ubuntu-latest\n    steps:\n      - uses: actions/checkout@v4\n      - uses: actions/setup-python@v5\n        with: {python-version: "3.12"}\n      - run: pip install pytest\n      - run: pytest -v\n',
+            "rust": 'name: CI\non: [push, pull_request]\njobs:\n  test:\n    runs-on: ubuntu-latest\n    steps:\n      - uses: actions/checkout@v4\n      - run: cargo test --lib\n',
+            "go": 'name: CI\non: [push, pull_request]\njobs:\n  test:\n    runs-on: ubuntu-latest\n    steps:\n      - uses: actions/checkout@v4\n      - uses: actions/setup-go@v5\n        with: {go-version: "1.24"}\n      - run: go test ./...\n',
+            "node": 'name: CI\non: [push, pull_request]\njobs:\n  test:\n    runs-on: ubuntu-latest\n    strategy:\n      matrix:\n        node-version: [18, 20]\n    steps:\n      - uses: actions/checkout@v4\n      - uses: actions/setup-node@v4\n        with:\n          node-version: ${{ matrix.node-version }}\n      - run: npm ci\n      - run: npm test\n',
+            "c": 'name: CI\non: [push, pull_request]\njobs:\n  build-and-test:\n    runs-on: ubuntu-latest\n    steps:\n      - uses: actions/checkout@v4\n      - run: sudo apt-get update && sudo apt-get install -y build-essential gcc make\n      - run: make all\n      - run: make test\n',
         }
         return templates.get(lang)
     
@@ -589,7 +541,7 @@ class FleetMechanic:
             repos = self._fetch_org_repos()
         
         reports = []
-        for repo in repos[:20]:  # Limit to 20 per scan
+        for repo in repos:
             try:
                 health = self.execute_repo_health(repo)
                 reports.append(health)
@@ -768,10 +720,37 @@ class TestFleetMechanic(unittest.TestCase):
 
     def test_gen_ci_node(self):
         m = FleetMechanic("fake-token")
-        self.assertIsNone(m._gen_ci("node"))
+        node_ci = m._gen_ci("node")
+        self.assertIsNotNone(node_ci)
+        self.assertIn("npm", node_ci)
+        self.assertIn("setup-node", node_ci)
         self.assertIsNotNone(m._gen_ci("go"))
         self.assertIsNotNone(m._gen_ci("rust"))
         self.assertIsNone(m._gen_ci("unknown"))
+
+    def test_gen_ci_c(self):
+        m = FleetMechanic("fake-token")
+        c_ci = m._gen_ci("c")
+        self.assertIsNotNone(c_ci)
+        self.assertIn("gcc", c_ci)
+        self.assertIn("make", c_ci)
+
+    def test_gen_ci_python(self):
+        m = FleetMechanic("fake-token")
+        ci = m._gen_ci("python")
+        self.assertIn("pytest", ci)
+        self.assertIn("setup-python", ci)
+
+    def test_gen_ci_rust(self):
+        m = FleetMechanic("fake-token")
+        ci = m._gen_ci("rust")
+        self.assertIn("cargo test", ci)
+
+    def test_gen_ci_go(self):
+        m = FleetMechanic("fake-token")
+        ci = m._gen_ci("go")
+        self.assertIn("go test", ci)
+        self.assertIn("setup-go", ci)
 
     def test_run_shell_command(self):
         m = FleetMechanic("fake-token")
@@ -785,6 +764,137 @@ class TestFleetMechanic(unittest.TestCase):
         self.assertIsNone(pr)
         issue = m.create_issue("nonexistent", "Test Issue", "Body")
         self.assertIsNone(issue)
+
+    def test_default_branch_detection(self):
+        m = FleetMechanic("fake-token")
+        # With fake token, API returns error dict without default_branch
+        branch = m._get_default_branch("nonexistent")
+        self.assertEqual(branch, "main")
+
+    def test_api_uses_urllib(self):
+        """Verify _api uses urllib, not shell curl."""
+        import inspect
+        source = inspect.getsource(FleetMechanic._api)
+        self.assertIn("urllib", source)
+        self.assertNotIn("curl", source)
+
+    def test_push_changes_no_shell_injection(self):
+        """Verify push_changes uses list args, not shell string."""
+        import inspect
+        source = inspect.getsource(FleetMechanic.push_changes)
+        self.assertIn("shell=False", source)
+
+    def test_run_with_list_args(self):
+        m = FleetMechanic("fake-token")
+        code, out = m._run(["echo", "hello"], shell=False)
+        self.assertEqual(code, 0)
+        self.assertIn("hello", out)
+
+    def test_fleet_scan_no_cap(self):
+        """Verify fleet_scan no longer has a 20-repo hard cap."""
+        import inspect
+        source = inspect.getsource(FleetMechanic.fleet_scan)
+        self.assertNotIn(":20", source)
+
+    def test_run_error_handling(self):
+        m = FleetMechanic("fake-token")
+        code, out = m._run("nonexistent_command_xyz_123")
+        self.assertNotEqual(code, 0)
+        self.assertTrue(len(out) > 0 or code != 0)
+
+    def test_mechanic_init(self):
+        m = FleetMechanic("test-token", org="TestOrg")
+        self.assertEqual(m.token, "test-token")
+        self.assertEqual(m.org, "TestOrg")
+        self.assertEqual(len(m.completed_tasks), 0)
+        self.assertEqual(len(m.health_reports), 0)
+        self.assertTrue(os.path.exists(m.work_dir))
+
+    def test_task_type_enum(self):
+        self.assertEqual(TaskType.FIX_TESTS.value, "fix_tests")
+        self.assertEqual(TaskType.GEN_DOCS.value, "gen_docs")
+        self.assertEqual(TaskType.GEN_CODE.value, "gen_code")
+        self.assertEqual(TaskType.GEN_CI.value, "gen_ci")
+        self.assertEqual(TaskType.REPO_HEALTH.value, "repo_health")
+        self.assertEqual(TaskType.SYNC.value, "sync")
+        self.assertEqual(TaskType.REVIEW.value, "review")
+
+    def test_task_result_enum(self):
+        self.assertEqual(TaskResult.SUCCESS.value, "success")
+        self.assertEqual(TaskResult.PARTIAL.value, "partial")
+        self.assertEqual(TaskResult.FAILED.value, "failed")
+        self.assertEqual(TaskResult.BLOCKED.value, "blocked")
+
+    def test_health_score_all_fields(self):
+        h = RepoHealth(
+            repo="full", has_readme=True, has_gitignore=True,
+            has_ci=True, has_tests=True, test_count=4, test_pass=2, test_fail=2,
+        )
+        h.compute_score()
+        # 0.2 + 0.1 + 0.2 + 0.2 + 0.3*(2/4) = 0.85
+        self.assertAlmostEqual(h.health_score, 0.85)
+
+    def test_health_markdown_all_checks(self):
+        h = RepoHealth(
+            repo="check", has_readme=False, has_gitignore=True,
+            has_ci=False, has_tests=True, test_count=3, test_pass=1,
+            language="rust", size_kb=1024,
+        )
+        md = h.to_markdown()
+        self.assertIn("❌", md)
+        self.assertIn("rust", md)
+        self.assertIn("1024KB", md)
+
+    def test_gitignore_node(self):
+        m = FleetMechanic("fake-token")
+        gi = m._gen_gitignore("node")
+        self.assertIn("node_modules", gi)
+
+    def test_detect_language_all(self):
+        import tempfile
+        m = FleetMechanic("fake-token")
+        with tempfile.TemporaryDirectory() as tmpdir:
+            for marker, expected in [
+                ("Cargo.toml", "rust"), ("go.mod", "go"),
+                ("package.json", "node"), ("pyproject.toml", "python"),
+                ("setup.py", "python"), ("Makefile", "c"),
+            ]:
+                d = os.path.join(tmpdir, marker.replace(".", "_"))
+                os.makedirs(d)
+                open(os.path.join(d, marker), "w").close()
+                self.assertEqual(m._detect_language(d), expected)
+
+    def test_clone_repo_fake(self):
+        m = FleetMechanic("fake-token")
+        result = m.clone_repo("nonexistent-repo-xyz")
+        self.assertFalse(result)
+
+    def test_run_tests_no_framework(self):
+        import tempfile
+        m = FleetMechanic("fake-token")
+        with tempfile.TemporaryDirectory() as tmpdir:
+            os.makedirs(f"{tmpdir}/fake-repo")
+            m.work_dir = tmpdir
+            total, passed, failed = m.run_tests("fake-repo")
+            self.assertEqual(total, 0)
+            self.assertEqual(passed, 0)
+            self.assertEqual(failed, 0)
+
+    def test_execute_repo_health_fake(self):
+        m = FleetMechanic("fake-token")
+        health = m.execute_repo_health("nonexistent-repo-xyz")
+        # Should not crash, just return a health with default values
+        self.assertIsNotNone(health)
+        self.assertEqual(health.repo, "nonexistent-repo-xyz")
+
+    def test_create_issue_with_labels(self):
+        m = FleetMechanic("fake-token")
+        issue = m.create_issue("nonexistent", "Test", "Body", labels=["bug", "help-wanted"])
+        self.assertIsNone(issue)
+
+    def test_completed_tasks_tracking(self):
+        m = FleetMechanic("fake-token")
+        self.assertEqual(len(m.completed_tasks), 0)
 
     def test_push_changes(self):
         import tempfile

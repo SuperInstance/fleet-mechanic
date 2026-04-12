@@ -9,6 +9,19 @@ from typing import List, Dict, Optional
 sys.path.insert(0, 'src')
 from mechanic import FleetMechanic, RepoHealth
 
+try:
+    TOKEN = open("/tmp/.mechanic_token").read().strip()
+except FileNotFoundError:
+    print("ERROR: Token file not found at /tmp/.mechanic_token")
+    print("Set it with: echo $GITHUB_TOKEN > /tmp/.mechanic_token")
+    sys.exit(1)
+except PermissionError:
+    print("ERROR: Cannot read /tmp/.mechanic_token (permission denied)")
+    sys.exit(1)
+if not TOKEN:
+    print("ERROR: Token file is empty")
+    sys.exit(1)
+mechanic = FleetMechanic(TOKEN, "SuperInstance")
 
 class RateLimiter:
     """Handle API rate limiting with exponential backoff."""
