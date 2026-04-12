@@ -26,11 +26,12 @@ class RateLimiter:
         self.max_retries = max_retries
         self.current_delay = initial_delay
 
-    def backoff(self, attempt: int) -> float:
-        """Calculate exponential backoff delay.
+print(f"Total repos: {len(all_repos)} (own: {len(own)}, forks: {len(forks)})")
+print(f"\nScanning own repos (full pagination)...\n")
 
-        Args:
-            attempt: Current attempt number (starting from 0)
+# Use fleet_scan with no limit for full scan
+reports = mechanic.fleet_scan([r["name"] for r in own])
+reports.sort(key=lambda r: r.health_score)
 
         Returns:
             Delay in seconds for this attempt

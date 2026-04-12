@@ -576,29 +576,78 @@ class FleetMechanic:
         }
         return templates.get(lang)
     
-    def fleet_scan(self, repos: Optional[List[str]] = None) -> List[RepoHealth]:
-        """Scan fleet repos and generate health reports.
-        
+    def _paginate_repos(self, include_forks: bool = False) -> List[Dict]:
+        """Fetch ALL repos with full pagination support.
+
+        GitHub API returns max 100 per page. This method paginates
+        through all pages to return the complete list of repos.
+
         Args:
-            repos: Optional list of repository names. If None, fetches from organization.
-        
+            include_forks: Whether to include forked repos.
+
         Returns:
-            List of RepoHealth objects with scan results
+            Complete list of repo dicts from GitHub API.
+        """
+        all_repos: List[Dict] = []
+        page = 1
+        while True:
+            result = self._api(
+                "GET",
+                f"/users/{self.org}/repos?per_page=100&sort=updated&page={page}"
+            )
+            if not isinstance(result, list) or len(result) == 0:
+                break
+            for r in result:
+                if include_forks or not r.get("fork"):
+                    all_repos.append(r)
+            if len(result) < 100:
+                break
+            page += 1
+            time.sleep(0.5)  # Rate limit courtesy
+
+        return all_repos
+
+    def fleet_scan(self, repos: List[str] = None, limit: int = 0,
+                   include_forks: bool = False,
+                   output_json: str = None) -> List[RepoHealth]:
+        """Scan fleet repos and generate health reports.
+
+        Supports full pagination to scan all 733+ repos.
+
+        Args:
+            repos: Explicit list of repo names. If None, auto-discovers.
+            limit: Max repos to scan (0 = unlimited, scans all).
+            include_forks: Whether to include forked repos in scan.
+            output_json: Path to write JSON health report.
+
+        Returns:
+            List of RepoHealth reports sorted by health_score.
         """
         if repos is None:
-            repos = self._fetch_org_repos()
-        
+            all_repo_data = self._paginate_repos(include_forks=include_forks)
+            repos = [r["name"] for r in all_repo_data]
+            print(f"  Discovered {len(repos)} repos via API (paginated)")
+
+        if limit > 0:
+            repos = repos[:limit]
+
         reports = []
-        for repo in repos[:20]:  # Limit to 20 per scan
+        for i, repo in enumerate(repos):
             try:
                 health = self.execute_repo_health(repo)
                 reports.append(health)
+                score_str = f"{health.health_score:.0%}"
+                print(f"  [{i+1}/{len(repos)}] {repo:40s} score={score_str}")
             except Exception as e:
                 h = RepoHealth(repo=repo)
+                h.diagnosis = str(e)
                 h.compute_score()
-                print(f"Warning: Failed to scan {repo}: {e}")
                 reports.append(h)
-        
+                print(f"  [{i+1}/{len(repos)}] {repo:40s} ERROR: {e}")
+
+        if output_json:
+            self._write_json_report(reports, output_json)
+
         return reports
     
     def _fetch_org_repos(self) -> List[str]:
@@ -615,6 +664,64 @@ class FleetMechanic:
         except Exception as e:
             print(f"Warning: Failed to fetch repos: {e}")
             return []
+
+    def _write_json_report(self, reports: List[RepoHealth], path: str):
+        """Write health scan results to a JSON file.
+
+        Generates summary statistics, language distribution, and
+        per-repo details.
+
+        Args:
+            reports: List of RepoHealth objects.
+            path: Output file path for the JSON report.
+        """
+        summary = {
+            "total_repos": len(reports),
+            "healthy_count": sum(1 for r in reports if r.health_score >= 0.5),
+            "unhealthy_count": sum(1 for r in reports if r.health_score < 0.5),
+            "avg_score": sum(r.health_score for r in reports) / max(1, len(reports)),
+            "repos_with_ci": sum(1 for r in reports if r.has_ci),
+            "repos_with_tests": sum(1 for r in reports if r.has_tests),
+            "repos_with_readme": sum(1 for r in reports if r.has_readme),
+            "total_tests": sum(r.test_count for r in reports),
+            "total_passing": sum(r.test_pass for r in reports),
+            "total_failing": sum(r.test_fail for r in reports),
+            "language_distribution": {},
+        }
+
+        for r in reports:
+            lang = r.language or "unknown"
+            summary["language_distribution"][lang] = summary["language_distribution"].get(lang, 0) + 1
+
+        summary["top_repos"] = sorted(
+            [{"repo": r.repo, "score": r.health_score, "language": r.language} for r in reports],
+            key=lambda x: x["score"], reverse=True
+        )[:20]
+
+        summary["bottom_repos"] = sorted(
+            [{"repo": r.repo, "score": r.health_score, "language": r.language} for r in reports],
+            key=lambda x: x["score"]
+        )[:20]
+
+        repos_data = []
+        for r in reports:
+            repos_data.append({
+                "repo": r.repo, "health_score": r.health_score,
+                "has_readme": r.has_readme, "has_gitignore": r.has_gitignore,
+                "has_ci": r.has_ci, "has_tests": r.has_tests,
+                "test_count": r.test_count, "test_pass": r.test_pass,
+                "test_fail": r.test_fail, "language": r.language,
+                "size_kb": r.size_kb,
+            })
+
+        report = {"summary": summary, "repos": repos_data}
+
+        out_dir = os.path.dirname(path)
+        if out_dir:
+            os.makedirs(out_dir, exist_ok=True)
+        with open(path, "w") as f:
+            json.dump(report, f, indent=2)
+        print(f"  JSON report written to {path}")
 
 
 # ── FLUX Bytecode Integration ──────────────────────────
@@ -730,6 +837,54 @@ class TestFleetMechanic(unittest.TestCase):
         # Should handle gracefully with no repos
         reports = m.fleet_scan(repos=[])
         self.assertEqual(len(reports), 0)
+
+    def test_fleet_scan_with_limit(self):
+        """Verify the limit parameter works correctly."""
+        m = FleetMechanic("fake-token")
+        repos = ["repo-a", "repo-b", "repo-c", "repo-d", "repo-e"]
+        reports = m.fleet_scan(repos=repos, limit=3)
+        # Should only scan 3 repos (they will error on clone, but still count)
+        self.assertEqual(len(reports), 3)
+
+    def test_fleet_scan_with_json_output(self):
+        """Verify JSON report output works."""
+        import tempfile
+        m = FleetMechanic("fake-token")
+        reports = m.fleet_scan(repos=["fake-repo-1", "fake-repo-2"], output_json="/tmp/test_health.json")
+        self.assertEqual(len(reports), 2)
+        import os
+        self.assertTrue(os.path.exists("/tmp/test_health.json"))
+        with open("/tmp/test_health.json") as f:
+            data = json.load(f)
+        self.assertIn("summary", data)
+        self.assertIn("repos", data)
+        self.assertEqual(data["summary"]["total_repos"], 2)
+        os.remove("/tmp/test_health.json")
+
+    def test_json_report_structure(self):
+        """Verify JSON report has all expected fields."""
+        import tempfile
+        m = FleetMechanic("fake-token")
+        reports = [
+            RepoHealth(repo="healthy", has_readme=True, has_ci=True,
+                       has_tests=True, test_count=10, test_pass=10, language="Python"),
+            RepoHealth(repo="unhealthy", has_readme=False, has_ci=False,
+                       has_tests=False, language="unknown"),
+        ]
+        for r in reports:
+            r.compute_score()
+        m._write_json_report(reports, "/tmp/test_health_struct.json")
+        with open("/tmp/test_health_struct.json") as f:
+            data = json.load(f)
+        s = data["summary"]
+        self.assertEqual(s["total_repos"], 2)
+        self.assertEqual(s["healthy_count"], 1)
+        self.assertEqual(s["unhealthy_count"], 1)
+        self.assertIn("Python", s["language_distribution"])
+        self.assertEqual(len(s["top_repos"]), 2)
+        self.assertEqual(len(s["bottom_repos"]), 2)
+        self.assertEqual(len(data["repos"]), 2)
+        os.remove("/tmp/test_health_struct.json")
 
     def test_health_score_partial(self):
         h = RepoHealth(repo="test", has_readme=True, has_gitignore=False,
