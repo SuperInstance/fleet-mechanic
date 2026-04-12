@@ -411,6 +411,59 @@ class TestCodeFixer(unittest.TestCase):
         sources = m.load_sources("/tmp/nonexistent")
         self.assertEqual(len(sources), 0)
 
+    def test_parse_go_failure(self):
+        p = DiagnosticFailureParser()
+        output = "--- FAIL: TestAdd (0.00s)\n    main_test.go:15: expected 4 got 3\n--- PASS: TestSub\n"
+        failures = p.parse_go(output)
+        self.assertEqual(len(failures), 1)
+        self.assertEqual(failures[0].test_name, "TestAdd")
+
+    def test_missing_import_suggestion(self):
+        f = CodeFixer()
+        failures = [DiagnosticFailure("test", "f.py", 3, "NameError",
+                                        "NameError: name 'math' is not defined")]
+        fixes = f.suggest_fixes(failures, {})
+        import_fixes = [fix for fix in fixes if "import" in fix.description.lower()]
+        self.assertGreater(len(import_fixes), 0)
+
+    def test_type_error_str_int(self):
+        f = CodeFixer()
+        failures = [DiagnosticFailure("test", "f.py", 10, "TypeError",
+                                        "expected str got int")]
+        fixes = f.suggest_fixes(failures, {})
+        str_fixes = [fix for fix in fixes if "str" in fix.new_code]
+        self.assertGreater(len(str_fixes), 0)
+
+    def test_apply_fix(self):
+        import tempfile
+        with tempfile.TemporaryDirectory() as tmpdir:
+            filepath = os.path.join(tmpdir, "test.py")
+            with open(filepath, "w") as fh:
+                fh.write("x = 5\nassert x > 0.8\n")
+            fix = CodeFix(
+                file="test.py", line=2,
+                old_code="assert x > 0.8",
+                new_code="assert x >= 0.8",
+                description="Relax assertion",
+                confidence=0.5,
+            )
+            mcf = MechanicCodeFixer()
+            mcf._apply_fix(tmpdir, fix)
+            with open(filepath) as fh:
+                content = fh.read()
+            self.assertIn("assert x >= 0.8", content)
+            self.assertNotIn("assert x > 0.8", content)
+
+    def test_fix_confidence_filtering(self):
+        f = CodeFixer()
+        failures = [DiagnosticFailure("test", "f.py", 1, "AttributeError",
+                                        "no attribute 'missing_field'")]
+        fixes = f.suggest_fixes(failures, {})
+        self.assertGreater(len(fixes), 0)
+        # Attribute fix has low confidence (0.2), filtered by auto_fix's >= 0.3 gate
+        low_conf = [fix for fix in fixes if fix.confidence < 0.3]
+        self.assertGreater(len(low_conf), 0)
+
 
 if __name__ == "__main__":
     unittest.main(verbosity=2)
