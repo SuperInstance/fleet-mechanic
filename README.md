@@ -1,5 +1,6 @@
 # fleet-mechanic 🔧
 
+[![Mechanic Auto](https://github.com/SuperInstance/fleet-mechanic/actions/workflows/mechanic-auto.yml/badge.svg)](https://github.com/SuperInstance/fleet-mechanic/actions/workflows/mechanic-auto.yml) [![License: MIT](https://img.shields.io/badge/License-MIT-blue.svg)](https://opensource.org/licenses/MIT)
 Autonomous fleet maintenance agent — the Aider/Claude Code killer, but A2A-native.
 
 ## Capabilities
