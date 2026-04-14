@@ -4,3 +4,4 @@ __pycache__/
 *.egg-info/
 mechanic-work/
 .mechanic_token
+.aider*
